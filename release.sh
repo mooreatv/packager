@@ -2130,7 +2130,6 @@ if [ -z "$skip_zipfile" ]; then
 				"$project_site/api/projects/$slug/upload-file" ) &&
 		{
 			case $result in
-				422) echo "Github 422 spasm? ignoring it for now" ;;
 				200) echo "Success!" ;;
 				302)
 					echo "Error! ($result)"
@@ -2253,8 +2252,11 @@ if [ -z "$skip_zipfile" ]; then
 					--data-binary "@$_ghf_file_path" \
 					"https://uploads.github.com/repos/$project_github_slug/releases/$_ghf_release_id/assets?name=$_ghf_file_name" ) &&
 			{
-				if [ "$result" = "201" ]; then
-					echo "Success!"
+				if [ "$result" = "201" || "$result" = "422" ]; then
+					echo "Success, sort of: $result"
+					if [ -s "$_ghf_resultfile" ]; then
+						echo "$(<"$_ghf_resultfile")"
+					fi
 				else
 					echo "Error ($result)"
 					if [ -s "$_ghf_resultfile" ]; then
