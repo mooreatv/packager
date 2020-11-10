@@ -2130,6 +2130,7 @@ if [ -z "$skip_zipfile" ]; then
 				"$project_site/api/projects/$slug/upload-file" ) &&
 		{
 			case $result in
+				422) echo "Github 422 spasm? ignoring it for now" ;;
 				200) echo "Success!" ;;
 				302)
 					echo "Error! ($result)"
