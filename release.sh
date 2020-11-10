@@ -2252,7 +2252,7 @@ if [ -z "$skip_zipfile" ]; then
 					--data-binary "@$_ghf_file_path" \
 					"https://uploads.github.com/repos/$project_github_slug/releases/$_ghf_release_id/assets?name=$_ghf_file_name" ) &&
 			{
-				if [ "$result" = "201" || "$result" = "422" ]; then
+				if [ "$result" = "201" -o "$result" = "422" ]; then
 					echo "Success, sort of: $result"
 					if [ -s "$_ghf_resultfile" ]; then
 						echo "$(<"$_ghf_resultfile")"
