@@ -760,7 +760,7 @@ tocfile=$(
 	if [[ -z "$filename" && -n "$package" ]]; then
 		# Handle having the core addon in a sub dir, which people have starting doing
 		# for some reason. Tons of caveats, just make the base dir your base addon people!
-		filename=$( ls "$package"/*.toc -1 2>/dev/null | head -n1 )
+		filename=$( (ls "$package"/*.toc -1 | grep -v -- "-") 2>/dev/null | head -n1 )
 	fi
 	echo "$filename"
 )
