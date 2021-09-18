@@ -85,8 +85,8 @@ classic=
 exit_code=0
 
 # Classic version info for special handling
-CLASSIC_INTERFACE="11307"
-CLASSIC_VERSION="1.13.7"
+CLASSIC_INTERFACE="20502"
+CLASSIC_VERSION="2.5.2"
 
 # Process command-line options
 usage() {
