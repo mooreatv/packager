@@ -27,6 +27,12 @@
 #
 # For more information, please refer to <http://unlicense.org/>
 
+# Global shellcheck excludes:
+#   SC2295: Expansions inside ${..} need to be quoted separately, otherwise they will match as a pattern.
+#   SC2030: Modification of var is local (to subshell caused by pipeline).
+#   SC2031: var was modified in a subshell. That change might be lost.
+# shellcheck disable=SC2295,SC2030,SC2031
+
 ## USER OPTIONS
 
 # Secrets for uploading
@@ -76,7 +82,7 @@ declare -A si_game_type_interface_all=()  # type -> toc (last file)
 declare -A si_game_type_interface=()      # type -> game type toc (last file)
 declare -A toc_interfaces=()              # path -> all toc interface values (: delim)
 declare -A toc_root_interface=()          # path -> base interface value
-declare -A root_paths=()                  # path -> directory name
+declare -A toc_root_paths=()              # path -> directory name
 
 # Script return code
 exit_code=0
@@ -377,10 +383,10 @@ unset check_tag
 
 # Load secrets
 if [ -f "$topdir/.env" ]; then
-	# shellcheck disable=1090,1091
+	# shellcheck disable=SC1090,SC1091
 	. "$topdir/.env"
 elif [ -f ".env" ]; then
-	# shellcheck disable=1091
+	# shellcheck disable=SC1091
 	. ".env"
 fi
 [ -z "$cf_token" ] && cf_token=$CF_API_KEY
@@ -542,6 +548,7 @@ set_info_svn() {
 				# Check if the latest tag matches the working copy revision (/trunk checkout instead of /tags)
 				_si_tag_line=$( svn log --verbose --limit 1 "$_si_root/tags" 2>/dev/null | awk '/^   A/ { print $0; exit }' )
 				_si_tag=$( echo "$_si_tag_line" | awk '/^   A/ { print $2 }' | awk -F/ '{ print $NF }' )
+				# shellcheck disable=SC2001
 				_si_tag_from_revision=$( echo "$_si_tag_line" | sed -e 's/^.*:\([0-9]\{1,\}\)).*$/\1/' ) # (from /project/trunk:N)
 
 				if [ "$_si_tag_from_revision" = "$_si_revision" ]; then
@@ -711,7 +718,7 @@ match_pattern() {
 	while [ -n "$_mp_list" ]; do
 		_mp_pattern=${_mp_list%%:*}
 		_mp_list=${_mp_list#*:}
-		# shellcheck disable=2254
+		# shellcheck disable=SC2254
 		case $_mp_file in
 			$_mp_pattern)
 				return 0
@@ -754,11 +761,13 @@ fi
 
 # Variables set via .pkgmeta.
 package=
+project=
 manual_changelog=
 changelog=
 changelog_markup="text"
 enable_nolib_creation=
 ignore=
+unchanged=
 contents=
 nolib_exclude=
 wowi_gen_changelog="true"
@@ -798,7 +807,7 @@ parse_ignore() {
 				yaml_line=${yaml_line#"${yaml_line%%[! ]*}"} # trim leading whitespace
 				# Get the YAML list item.
 				yaml_listitem "$yaml_line"
-				if [ "$pkgmeta_phase" = "ignore" ]; then
+				if [[ "$pkgmeta_phase" == "ignore" || "$pkgmeta_phase" == "plain-copy" ]]; then
 					pattern=$yaml_item
 					if [ -d "$checkpath/$pattern" ]; then
 						pattern="$copypath$pattern/*"
@@ -808,10 +817,18 @@ parse_ignore() {
 					else
 						pattern="$copypath$pattern"
 					fi
-					if [ -z "$ignore" ]; then
-						ignore="$pattern"
-					else
-						ignore="$ignore:$pattern"
+					if [[ "$pkgmeta_phase" == "ignore" ]]; then
+						if [ -z "$ignore" ]; then
+							ignore="$pattern"
+						else
+							ignore="$ignore:$pattern"
+						fi
+					elif [[ "$pkgmeta_phase" == "plain-copy" ]]; then
+						if [ -z "$unchanged" ]; then
+							unchanged="$pattern"
+						else
+							unchanged="$unchanged:$pattern"
+						fi
 					fi
 				fi
 				;;
@@ -903,6 +920,20 @@ if [ -f "$pkgmeta_file" ]; then
 									ignore="$ignore:$pattern"
 								fi
 								;;
+							plain-copy)
+								pattern=$yaml_item
+								if [ -d "$topdir/$pattern" ]; then
+									pattern="$pattern/*"
+								elif [ ! -f "$topdir/$pattern" ]; then
+									# doesn't exist so match both a file and a path
+									pattern="$pattern:$pattern/*"
+								fi
+								if [ -z "$unchanged" ]; then
+									unchanged="$pattern"
+								else
+									unchanged="$unchanged:$pattern"
+								fi
+								;;
 							tools-used)
 								relations["$yaml_item"]="tool"
 								;;
@@ -939,7 +970,8 @@ if [ -f "$pkgmeta_file" ]; then
 							move-folders)
 								# Save project root directories
 								if [[ $yaml_value != *"/"* ]]; then
-									root_paths["$topdir/$yaml_value"]="$yaml_value"
+									_mf_path="${yaml_key#*/}" # strip the package name
+									toc_root_paths["$topdir/$_mf_path"]="$yaml_value"
 								fi
 								;;
 						esac
@@ -969,7 +1001,8 @@ elif [ "$repository_type" = "svn" ]; then
 	# svn always being difficult.
 	OLDIFS=$IFS
 	IFS=$'\n'
-	for _vcs_ignore in $( cd "$topdir" && svn status --no-ignore --ignore-externals | awk '/^[?IX]/' | cut -c9- | tr '\\' '/' ); do
+	for _vcs_ignore in $( cd "$topdir" && svn status --no-ignore --ignore-externals | awk '/^[?IX]/' | cut -c9- ); do
+		_vcs_ignore="${_vcs_ignore//\\//}"
 		if [ -d "$topdir/$_vcs_ignore" ]; then
 			_vcs_ignore="$_vcs_ignore/*"
 		fi
@@ -983,7 +1016,7 @@ elif [ "$repository_type" = "svn" ]; then
 elif [ "$repository_type" = "hg" ]; then
 	_vcs_ignore=$( hg --cwd "$topdir" status --ignored --unknown --no-status --print0 | tr '\0' ':' )
 	if [ -n "$_vcs_ignore" ]; then
-		_vcs_ignore=${_vcs_ignore:0:-1}
+		_vcs_ignore="${_vcs_ignore%:}"
 		if [ -z "$ignore" ]; then
 			ignore="$_vcs_ignore"
 		else
@@ -995,6 +1028,8 @@ fi
 ###
 ### Process TOC file
 ###
+
+fallback_toc_file=
 
 do_toc() {
 	local toc_file toc_version toc_game_type root_toc_version
@@ -1018,27 +1053,11 @@ do_toc() {
 		20*) toc_game_type="bcc" ;;
 		*) toc_game_type="retail"
 	esac
+	si_game_type_interface=()
 	si_game_type_interface_all=()
 	[[ -n "$toc_game_type" ]] && si_game_type_interface_all["$toc_game_type"]="$toc_version"
 
 	root_toc_version="$toc_version"
-
-	if [[ -n "$package_name" ]]; then
-		# Get the title of the project for using in the changelog.
-		if [ -z "$project" ]; then
-			project=$( awk '/^## Title:/ { print $0; exit }' <<< "$toc_file" | sed -e 's/|c[0-9A-Fa-f]\{8\}//g' -e 's/|r//g' -e 's/|T[^|]*|t//g' -e 's/## Title[[:space:]]*:[[:space:]]*\(.*\)/\1/' -e 's/[[:space:]]*$//' )
-		fi
-		# Grab CurseForge ID and WoWI ID from the TOC file if not set by the script.
-		if [ -z "$slug" ]; then
-			slug=$( awk '/^## X-Curse-Project-ID:/ { print $NF; exit }' <<< "$toc_file" )
-		fi
-		if [ -z "$addonid" ]; then
-			addonid=$( awk '/^## X-WoWI-ID:/ { print $NF; exit }' <<< "$toc_file" )
-		fi
-		if [ -z "$wagoid" ]; then
-			wagoid=$( awk '/^## X-Wago-ID:/ { print $NF; exit }' <<< "$toc_file" )
-		fi
-	fi
 
 	if [[ ${toc_name} =~ "$package_name"[-_](Mainline|Classic|Vanilla|BCC|TBC)\.toc$ ]]; then
 		# Flavored
@@ -1104,6 +1123,24 @@ do_toc() {
 	toc_interfaces[$toc_path]=$( IFS=':' ; echo "${si_game_type_interface_all[*]}" )
 }
 
+set_toc_project_info() {
+	local toc_path="$1"
+	# Get the title of the addon for the changelog
+	if [ -z "$project" ]; then
+		project=$( sed -e $'1s/^\xEF\xBB\xBF//' -e $'s/\r//g' "$toc_path" | awk '/^## Title:/ { print $0; exit }' | sed -e 's/|c[0-9A-Fa-f]\{8\}//g' -e 's/|r//g' -e 's/|T[^|]*|t//g' -e 's/## Title[[:space:]]*:[[:space:]]*\(.*\)/\1/' -e 's/[[:space:]]*$//' )
+	fi
+	# Get project IDs for uploading
+	if [ -z "$slug" ]; then
+		slug=$( sed -e $'1s/^\xEF\xBB\xBF//' -e $'s/\r//g' "$toc_path" | awk '/^## X-Curse-Project-ID:/ { print $NF; exit }' )
+	fi
+	if [ -z "$addonid" ]; then
+		addonid=$( sed -e $'1s/^\xEF\xBB\xBF//' -e $'s/\r//g' "$toc_path" | awk '/^## X-WoWI-ID:/ { print $NF; exit }' )
+	fi
+	if [ -z "$wagoid" ]; then
+		wagoid=$( sed -e $'1s/^\xEF\xBB\xBF//' -e $'s/\r//g' "$toc_path" | awk '/^## X-Wago-ID:/ { print $NF; exit }' )
+	fi
+}
+
 set_build_version() {
 	local toc_game_type version
 
@@ -1146,6 +1183,7 @@ set_build_version() {
 
 # Set the package name from a TOC file name
 if [[ -z "$package" ]]; then
+	# shellcheck disable=SC2035
 	package=$( cd "$topdir" && find *.toc -maxdepth 0 2>/dev/null | sort -dr | head -n1 )
 	if [[ -z "$package" ]]; then
 		echo "Could not find an addon TOC file. In another directory? Set 'package-as' in .pkgmeta" >&2
@@ -1158,14 +1196,27 @@ if [[ -z "$package" ]]; then
 	fi
 fi
 
-# Add the project root
-root_paths["$topdir"]="$package"
+# Parse the project root TOC files for info first
+for toc_path in "$topdir/$package"{,-Mainline,_Mainline,-Classic,_Classic,-Vanilla,_Vanilla,-BCC,_BCC,-TBC,_TBC}.toc; do
+	if [[ -f "$toc_path" ]]; then
+		set_toc_project_info "$toc_path"
+		toc_root_paths["$topdir"]="$package"
+	fi
+done
+# Also check other project root directories for the root TOC file
+for path in "${!toc_root_paths[@]}"; do
+	if [[ -f "$path/$package.toc" ]]; then
+		set_toc_project_info "$path/$package.toc"
+		fallback_toc_file="$path/$package.toc"
+	fi
+done
 
-# Parse the main addon's TOC file(s)
-for path in "${!root_paths[@]}"; do
-	for toc in "$path/${root_paths[$path]}"{,-Mainline,_Mainline,-Classic,_Classic,-Vanilla,_Vanilla,-BCC,_BCC,-TBC,_TBC}.toc; do
-		if [[ -f "$toc" ]]; then
-			do_toc "$toc" "${root_paths[$path]}"
+# Parse project TOC files
+for path in "${!toc_root_paths[@]}"; do
+	for toc_path in "$path/${toc_root_paths[$path]}"{,-Mainline,_Mainline,-Classic,_Classic,-Vanilla,_Vanilla,-BCC,_BCC,-TBC,_TBC}.toc; do
+		if [[ -f "$toc_path" ]]; then
+			set_toc_project_info "$toc_path"
+			do_toc "$toc_path" "${toc_root_paths[$path]}"
 		fi
 	done
 done
@@ -1176,7 +1227,7 @@ if [[ ${#toc_interfaces[@]} -eq 0 ]]; then
 fi
 
 # CurseForge still requires a fallback TOC file
-if [[ -n "$slug" && "$slug" -gt 0 && ! -f "$topdir/$package.toc" && ! -f "$topdir/$package/$package.toc" ]]; then
+if [[ -n "$slug" && "$slug" -gt 0 && -z "$fallback_toc_file" ]]; then
 	echo "CurseForge still requires a fallback TOC file (\"$package.toc\") when using multiple TOC files." >&2
 	exit 1
 fi
@@ -1331,6 +1382,7 @@ localization_filter() {
 				# Generate a URL parameter string from the localization parameters.
 				# https://authors.curseforge.com/knowledge-base/projects/529-api
 				_ul_url_params=""
+				# shellcheck disable=SC2086
 				set -- ${_ul_params}
 				for _ul_param; do
 					_ul_key=${_ul_param%%=*}
@@ -1536,7 +1588,7 @@ copy_directory_tree() {
 	_cdt_split=
 	OPTIND=1
 	while getopts :adi:lnpu:g:eS _cdt_opt "$@"; do
-		# shellcheck disable=2220
+		# shellcheck disable=SC2220
 		case $_cdt_opt in
 			a)	_cdt_alpha="true" ;;
 			d)	_cdt_debug="true" ;;
@@ -1579,25 +1631,24 @@ copy_directory_tree() {
 	( cd "$_cdt_srcdir" && eval "$_cdt_find_cmd" ) | while read -r file; do
 		file=${file#./}
 		if [ -f "$_cdt_srcdir/$file" ]; then
-			# Check if the file should be ignored.
-			skip_copy=
+			_cdt_skip_copy=
+			_cdt_only_copy=
 			# Prefix external files with the relative pkgdir path
 			_cdt_check_file=$file
 			if [ -n "${_cdt_destdir#$pkgdir}" ]; then
 				_cdt_check_file="${_cdt_destdir#$pkgdir/}/$file"
 			fi
 			# Skip files matching the colon-separated "ignored" shell wildcard patterns.
-			if [ -z "$skip_copy" ] && match_pattern "$_cdt_check_file" "$_cdt_ignored_patterns"; then
-				skip_copy="true"
+			if match_pattern "$_cdt_check_file" "$_cdt_ignored_patterns"; then
+				_cdt_skip_copy="true"
 			fi
 			# Never skip files that match the colon-separated "unchanged" shell wildcard patterns.
-			unchanged=
-			if [ -n "$skip_copy" ] && match_pattern "$file" "$_cdt_unchanged_patterns"; then
-				skip_copy=
-				unchanged="true"
+			if match_pattern "$_cdt_check_file" "$_cdt_unchanged_patterns"; then
+				_cdt_skip_copy=
+				_cdt_only_copy="true"
 			fi
 			# Copy unskipped files into $_cdt_destdir.
-			if [ -n "$skip_copy" ]; then
+			if [ -n "$_cdt_skip_copy" ]; then
 				echo "  Ignoring: $file"
 			else
 				dir=${file%/*}
@@ -1605,7 +1656,7 @@ copy_directory_tree() {
 					mkdir -p "$_cdt_destdir/$dir"
 				fi
 				# Check if the file matches a pattern for keyword replacement.
-				if [ -n "$unchanged" ] || ! match_pattern "$file" "*.lua:*.md:*.toc:*.txt:*.xml"; then
+				if [ -n "$_cdt_only_copy" ] || ! match_pattern "$file" "*.lua:*.md:*.toc:*.txt:*.xml"; then
 					echo "  Copying: $file (unchanged)"
 					cp "$_cdt_srcdir/$file" "$_cdt_destdir/$dir"
 				else
@@ -1633,7 +1684,8 @@ copy_directory_tree() {
 						*.toc)
 							# We only care about processing project TOC files
 							if [[ -n ${toc_root_interface["$_cdt_srcdir/$file"]} ]]; then
-								do_toc "$_cdt_srcdir/$file" "${root_paths["$_cdt_srcdir/$file"]}"
+								_cdt_toc_dir="$_cdt_srcdir/${file%/*}"
+								do_toc "$_cdt_srcdir/$file" "${toc_root_paths["$_cdt_toc_dir"]}"
 								# Process the fallback TOC file according to it's base interface version
 								if [[ -z $_cdt_gametype && -n $_cdt_split ]]; then
 									case ${toc_root_interface["$_cdt_srcdir/$file"]} in
@@ -1676,7 +1728,7 @@ copy_directory_tree() {
 					eval < "$_cdt_srcdir/$file" "$_cdt_filters" 3>&1 > "$_cdt_destdir/$file"
 
 					# Create game type specific TOCs
-					if [[ $file == *".toc" && -n $_cdt_split ]]; then
+					if [[ -n $_cdt_split && -n ${toc_root_interface["$_cdt_srcdir/$file"]} ]]; then
 						local toc_version new_file
 						local root_toc_version="${toc_root_interface["$_cdt_srcdir/$file"]}"
 						for type in "${!si_game_type_interface[@]}"; do
@@ -1728,12 +1780,20 @@ if [ -z "$skip_copying" ]; then
 	[ -n "$split" ] && cdt_args+="S"
 	[ -n "$game_type" ] && cdt_args+=" -g $game_type"
 	[ -n "$ignore" ] && cdt_args+=" -i \"$ignore\""
-	[ -n "$changelog" ] && cdt_args+=" -u \"$changelog\""
+	if [ -n "$changelog" ]; then
+		if [ -z "$unchanged" ]; then
+			unchanged="$changelog"
+		else
+			unchanged="$unchanged:$changelog"
+		fi
+	fi
+	[ -n "$unchanged" ] && cdt_args+=" -u \"$unchanged\""
 	eval copy_directory_tree "$cdt_args" "\"$topdir\"" "\"$pkgdir\""
 fi
 
 # Reset ignore and parse pkgmeta ignores again to handle ignoring external paths
 ignore=
+unchanged=
 parse_ignore "$pkgmeta_file"
 
 ###
@@ -1760,7 +1820,7 @@ checkout_external() {
 	_external_uri=$2
 	_external_tag=$3
 	_external_type=$4
-	# shellcheck disable=2034
+	# shellcheck disable=SC2034
 	_external_slug=$5 # unused until we can easily fetch the project id
 	_external_checkout_type=$6
 
@@ -1864,9 +1924,9 @@ checkout_external() {
 		if [[ "$_external_uri" == *"wowace.com"* || "$_external_uri" == *"curseforge.com"* ]]; then
 			project_site="https://wow.curseforge.com"
 		fi
-		# If a .pkgmeta file is present, process it for an "ignore" list.
+		# If a .pkgmeta file is present, process it for "ignore" and "plain-copy" lists.
 		parse_ignore "$_cqe_checkout_dir/.pkgmeta" "$_external_dir"
-		copy_directory_tree -dnpe -i "$ignore" "$_cqe_checkout_dir" "$pkgdir/$_external_dir"
+		copy_directory_tree -dnpe -i "$ignore" -u "$unchanged" "$_cqe_checkout_dir" "$pkgdir/$_external_dir"
 	)
 	# Remove the ".checkout" subdirectory containing the full checkout.
 	if [ -d "$_cqe_checkout_dir" ]; then
@@ -2334,11 +2394,12 @@ if [ -f "$pkgmeta_file" ]; then
 									mv -f "$srcdir"/* "$destdir" && rm -fr "$srcdir"
 									contents="$contents $yaml_value"
 									# Check to see if the base source directory is empty
-									_mf_basedir=${srcdir%$(basename "$yaml_key")}
-									if [ ! "$( ls -A "$_mf_basedir" )" ]; then
-										echo "Removing empty directory ${_mf_basedir#$releasedir/}"
-										rm -fr "$_mf_basedir"
-									fi
+									_mf_basedir="/${yaml_key%/*}"
+									while [[ -n "$_mf_basedir" && -z "$( ls -A "${releasedir}${_mf_basedir}" )" ]]; do
+										echo "Removing empty directory ${_mf_basedir#/}"
+										rm -fr "${releasedir}${_mf_basedir}"
+										_mf_basedir="${_mf_basedir%/*}"
+									done
 								fi
 								# update external dir
 								nolib_exclude=${nolib_exclude//$srcdir/$destdir}
@@ -2372,7 +2433,7 @@ if [ -z "$skip_zipfile" ]; then
 		nolib_archive_label="${nolib_archive_label}-nolib"
 	fi
 	if [ "$archive_name" = "$nolib_archive_name" ]; then
-		nolib_archive_name="${nolib_archive_name#.zip}-nolib.zip"
+		nolib_archive_name="${nolib_archive_name%.zip}-nolib.zip"
 	fi
 	nolib_archive="$releasedir/$nolib_archive_name"
 
@@ -2392,6 +2453,7 @@ if [ -z "$skip_zipfile" ]; then
 	if [ -f "$archive" ]; then
 		rm -f "$archive"
 	fi
+	# shellcheck disable=SC2086
 	( cd "$releasedir" && zip -X -r "$archive" $contents )
 
 	if [ ! -f "$archive" ]; then
@@ -2418,6 +2480,7 @@ if [ -z "$skip_zipfile" ]; then
 			rm -f "$nolib_archive"
 		fi
 		# set noglob so each nolib_exclude path gets quoted instead of expanded
+		# shellcheck disable=SC2086
 		( set -f; cd "$releasedir" && zip -X -r -q "$nolib_archive" $contents -x $nolib_exclude )
 
 		if [ ! -f "$nolib_archive" ]; then
@@ -2439,29 +2502,39 @@ upload_curseforge() {
 
 	local _cf_game_version_id _cf_game_version _cf_versions
 	_cf_versions=$( curl -s -H "x-api-token: $cf_token" $project_site/api/game/versions )
-	if [ -n "$_cf_versions" ]; then
-		if [ -n "$game_version" ]; then
-			_cf_game_version_id=$( echo "$_cf_versions" | jq -c --argjson v "[\"${game_version//,/\",\"}\"]" 'map(select(.name as $x | $v | index($x)) | .id) | select(length > 0)' 2>/dev/null )
-			if [ -n "$_cf_game_version_id" ]; then
-				# and now the reverse, since an invalid version will just be dropped
-				_cf_game_version=$( echo "$_cf_versions" | jq -r --argjson v "$_cf_game_version_id" 'map(select(.id as $x | $v | index($x)) | .name) | join(",")' 2>/dev/null )
-			fi
-		fi
-		if [ -z "$_cf_game_version_id" ]; then
-			case $game_type in
-				retail) _cf_game_type_id=517 ;;
-				classic) _cf_game_type_id=67408 ;;
-				bcc) _cf_game_type_id=73246 ;;
-				*) _cf_game_type_id=517 # retail fallback
+	if [[ -n $_cf_versions && $_cf_versions != *"errorMessage"* ]]; then
+		_cf_game_version_id=
+		_cf_game_version=
+		local version_name version_id game_id
+		for type in "classic" "bcc" "retail"; do  # sort order (last id is show as the version on the project's files page apparently)
+			version_name="${game_type_version[$type]}"
+			[[ -z $version_name ]] && continue
+			case $type in
+				classic) game_id=67408 ;;
+				bcc) game_id=73246 ;;
+				*) game_id=517
 			esac
-			_cf_game_version_id=$( echo "$_cf_versions" | jq -c --argjson v "$_cf_game_type_id" 'map(select(.gameVersionTypeID == $v)) | max_by(.id) | [.id]' 2>/dev/null )
-			_cf_game_version=$( echo "$_cf_versions" | jq -r --argjson v "$_cf_game_type_id" 'map(select(.gameVersionTypeID == $v)) | max_by(.id) | .name' 2>/dev/null )
-			if [ -n "$game_version" ]; then
-				echo "WARNING: No CurseForge game version match, defaulting to \"$_cf_game_version\"" >&2
+
+			# check the version
+			if ! jq -e --arg v "$version_name" 'map(select(.name == $v)) | length > 0' <<< "$_cf_versions" &>/dev/null; then
+				# no match, so grab the next highest version (try to avoid testing versions)
+				version_name=$( echo "$_cf_versions" | jq -r --arg v "$version_name" --argjson t "$game_id" 'map(select(.gameVersionTypeID == $t and .name < $v)) | max_by(.id) | .name // empty' )
+				if [[ -z $version_name ]]; then
+					# no? just grab the highest version
+					version_name=$( echo "$_cf_versions" | jq -r --argjson t "$game_id" 'map(select(.gameVersionTypeID == $t)) | max_by(.id) | .name' )
+				fi
+				echo "WARNING: No CurseForge game version match for \"${game_type_version[$type]}\", using \"$version_name\"" >&2
 			fi
-		fi
+			_cf_game_version+=",${version_name}"
+
+			# get the id
+			version_id=$( echo "$_cf_versions" | jq -r --arg v "$version_name" --argjson t "$game_id" '.[] | select(.gameVersionTypeID == $t and .name == $v) | .id' )
+			_cf_game_version_id+=",${version_id}"
+		done
+		_cf_game_version_id="[${_cf_game_version_id#,}]"
+		_cf_game_version="${_cf_game_version#,}"
 	fi
-	if [ -z "$_cf_game_version_id" ]; then
+	if [ -z "$_cf_game_version" ]; then
 		echo "Error fetching game version info from $project_site/api/game/versions"
 		echo
 		echo "Skipping upload to CurseForge."
@@ -2537,18 +2610,37 @@ upload_wowinterface() {
 		return 0
 	fi
 
-	local _wowi_game_version _wowi_versions
-	_wowi_versions=$( curl -s -H "x-api-token: $wowi_token" https://api.wowinterface.com/addons/compatible.json )
+	local _wowi_game_version _wowi_versions _wowi_versions_type
+	_wowi_versions=$( curl -s https://api.wowinterface.com/addons/compatible.json )
 	if [ -n "$_wowi_versions" ]; then
-		if [ -n "$game_version" ]; then
-			_wowi_game_version=$( echo "$_wowi_versions" | jq -r --argjson v "[\"${game_version//,/\",\"}\"]" 'map(select(.id as $x | $v | index($x)) | .id) | join(",")' 2>/dev/null )
-		fi
-		if [ -z "$_wowi_game_version" ]; then
-			_wowi_game_version=$( echo "$_wowi_versions" | jq -r '.[] | select(.default == true) | .id' 2>/dev/null )
-			if [ -n "$game_version" ]; then
-				echo "WARNING: No WoWInterface game version match, defaulting to \"$_wowi_game_version\"" >&2
+		_wowi_game_version=
+		local version
+		for type in "${!game_type_version[@]}"; do
+			version="${game_type_version[$type]}"
+			# check the version
+			if ! jq -e --arg v "$version" 'map(select(.id == $v)) | length > 0' <<< "$_wowi_versions" &>/dev/null; then
+				# split out the versions that match the version we're checking against (to keep things more readable)
+				_wowi_versions_type=$( echo "$_wowi_versions" | jq -c --arg v "$version" 'map(select( (.id | .[:2]) == ($v | .[:2]) ))' )
+				if [[ $_wowi_versions_type == "[]" ]]; then
+					# retail default. the version doesn't match a classic version nor actual retail versions, but we fallback to retail
+					version=$( echo "$_wowi_versions" | jq -r '.[] | select(.default == true ) | .id' )
+				else
+					# use the next highest version (try to avoid testing versions)
+					version=$( echo "$_wowi_versions_type" | jq -r --arg v "$version" 'map(select(.id < $v)) | max_by(.id) | .id // empty' )
+					if [[ -z $version ]]; then
+						if [[ $type == "retail" ]]; then # cheating
+							version=$( echo "$_wowi_versions" | jq -r '.[] | select(.default == true ) | .id' )
+						else # just grab the highest version
+							version=$( echo "$_wowi_versions_type" | jq -r 'max_by(.id) | .id' )
+						fi
+					fi
+				fi
+				echo "WARNING: No WoWInterface game version match for \"${game_type_version[$type]}\", using \"$version\"" >&2
+				_wowi_versions_type=
 			fi
-		fi
+			_wowi_game_version+=",${version}"
+		done
+		_wowi_game_version="${_wowi_game_version#,}"
 	fi
 	if [ -z "$_wowi_game_version" ]; then
 		echo "Error fetching game version info from https://api.wowinterface.com/addons/compatible.json"
@@ -2559,7 +2651,7 @@ upload_wowinterface() {
 		return 1
 	fi
 
-	declare -a _wowi_args
+	local -a _wowi_args
 	local resultfile result
 	local return_code=0
 
@@ -2623,9 +2715,29 @@ upload_wago() {
 		return 0
 	fi
 
-	local _wago_versions
+	local _wago_support_property _wago_versions
 	_wago_versions=$( curl -s https://addons.wago.io/api/data/game | jq -c '.patches' 2>/dev/null )
-	if [ -z "$_wago_versions" ]; then
+	if [ -n "$_wago_versions" ]; then
+		_wago_support_property=
+		local version wago_type
+		for type in "${!game_type_version[@]}"; do
+			version="${game_type_version[$type]}"
+			wago_type="$type"
+			[[ "$wago_type" == "bcc" ]] && wago_type="bc"
+			# check the version
+			if ! jq -e --arg t "$wago_type" --arg v "$version" '.[$t] | index($v)' <<< "$_wago_versions" &>/dev/null; then
+				# no match, so grab the next highest version (try to avoid testing versions)
+				version=$( echo "$_wago_versions" | jq -r --arg t "$wago_type" --arg v "$version" '.[$t] | map(select(. < $v)) | max // empty' )
+				if [[ -z $version ]]; then
+					# just grab the highest version
+					version=$( echo "$_wago_versions" | jq -r --arg t "$wago_type" '.[$t] | max' )
+				fi
+				echo "WARNING: No Wago game version match for \"${game_type_version[$type]}\", using \"$version\"" >&2
+			fi
+			_wago_support_property+="\"supported_${wago_type}_patch\": \"${version}\", "
+		done
+	fi
+	if [ -z "$_wago_support_property" ]; then
 		echo "Error fetching game version info from https://addons.wago.io/api/data/game"
 		echo
 		echo "Skipping upload to Wago."
@@ -2634,18 +2746,9 @@ upload_wago() {
 		return 1
 	fi
 
-	local _wago_payload _wago_support_property _wago_stability
-	local resultfile result version
+	local _wago_payload _wago_stability
+	local resultfile result
 	local return_code=0
-
-	_wago_support_property=""
-	for type in "${!game_type_version[@]}"; do
-		version=${game_type_version[$type]}
-		[[ "$type" == "bcc" ]] && type="bc"
-		# if jq -e --arg t "$type" --arg v "$version" '.[$t] | index($v)' <<< "$_wago_versions" &>/dev/null; then
-			_wago_support_property+="\"supported_${type}_patch\": \"${version}\", "
-		# fi
-	done
 
 	_wago_stability="$file_type"
 	if [[ "$file_type" == "release" ]]; then
@@ -2758,10 +2861,11 @@ upload_github() {
 	fi
 
 	local _gh_metadata _gh_previous_metadata _gh_payload _gh_release_url _gh_method
-	local release_id versionfile resultfile result flavor
+	local release_id versionfile resultfile result flavor title
 	local return_code=0
 
-	_gh_metadata='{ "filename": "'"$archive_name"'", "nolib": false, "metadata": ['
+	title=$( echo "$project" | jq --raw-input '.' )
+	_gh_metadata='{ "name": '"$title"', "version": "'"$project_version"'", "filename": "'"$archive_name"'", "nolib": false, "metadata": ['
 	for type in "${!game_type_version[@]}"; do
 		flavor="${game_flavor[$type]}"
 		[[ $flavor == "retail" ]] && flavor="mainline"
@@ -2770,7 +2874,7 @@ upload_github() {
 	_gh_metadata=${_gh_metadata%,}
 	_gh_metadata+='] }'
 	if [ -f "$nolib_archive" ]; then
-		_gh_metadata+=',{ "filename": "'"$nolib_archive_name"'", "nolib": true, "metadata": ['
+		_gh_metadata+=',{ "name": '"$title"', "version": "'"$project_version"'", "filename": "'"$nolib_archive_name"'", "nolib": true, "metadata": ['
 		for type in "${!game_type_version[@]}"; do
 			flavor="${game_flavor[$type]}"
 			[[ $flavor == "retail" ]] && flavor="mainline"
