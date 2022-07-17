@@ -30,46 +30,9 @@ For a full example workflow, please check out the [wiki page](https://github.com
 
 ### What's new with v2
 
-Support for multiple TOC files and multiple versions required completely
-reworking how the game version and game type was handled.  The multiple build
-workflow that has become common for people that support multiple game types
-should continue to work as before, but I felt like it would be good to bump
-the version number so anyone explicitly using a v1 tag won't experience any
-surprises.
-
-So what does this mean for you?
-
-1. You only need to build a file once!  Just create [multiple TOC files](https://wowpedia.fandom.com/wiki/TOC_format#Multiple_client_flavors),
-   one for each supported game type, and game versions will be set from them on
-   upload.  So if you've already been dabbling with multiple TOC files and/or
-   multiple versions, you no longer need to manually set the versions via `-g`
-   or on the CurseForge website.
-
-   __Note:__ CurseForge still requires that a fallback TOC file exists.  So if
-   you support all three game types, you may as well leave the fallback TOC file
-   as one of the game types instead of creating three game type specific ones.
-
-2. If you are using multiple `## Interface-Type` lines in your TOC file, you can
-   now use the `-S` command line option or add `enable-toc-creation: yes` to
-   your `.pkgmeta` file to automatically generate game type specific TOC files
-   based on your existing preprocessing logic.  The fallback TOC file will use
-   the base interface value as it's version.
-
-   ```toc
-   ## Interface: 90200
-   ## Interface-Classic: 11402
-   ## Interface-BCC: 20503
-   ```
-
-   Splitting the above TOC file would end up with `MyAddon_Vanilla.toc`,
-   `MyAddon_TBC.toc`, and `MyAddon.toc` (retail).
-
-3. If you use build version keywords (e.g., `@version-retail@` ... `@end-version-retail@`)
-   for controlling what code blocks execute based on the build version, you
-   need to switch to plain old Lua control statements.  Fortunately, there are
-   some [constants](https://wowpedia.fandom.com/wiki/WOW_PROJECT_ID) set by
-   Blizzard you can use for this.  If you use these keywords in xml files, you
-   will have to reorganize your includes in the appropriate TOC files.
+Creating one package file that supports multiple game versions is now supported!
+See [Building for multiple game versions](https://github.com/BigWigsMods/packager#building-for-multiple-game-versions)
+for more info.
 
 ## Customizing the build
 
@@ -177,8 +140,8 @@ Supported keywords and when the code block will run:
   file.
 - `no-lib-strip`: *(not supported in Lua files)* in any build other than a
   *nolib* build.
-- `retail`,`version-retail`,`version-classic`,`version-bcc`: based on game
-  version.
+- `retail`,`version-retail`,`version-classic`,`version-bcc`,`version-wrath`:
+  based on game version.
 
 `do-not-package` is a bit special. Everything between the tags, including the
 tags themselves, will always be removed from the packaged file. This will cause
@@ -250,11 +213,13 @@ on the build type:
 
 `{classic}` has some additional magic:
 
-1. It will show as the non-retail build type, so either `-classic` or `-bcc`.
-2. It will not be shown if "-classic" or "-bcc" is in the project version.
+1. It will show as the non-retail build type, so `-classic`, `-bcc`, or
+   `-wrath`.
+2. It will not be shown if "-classic" or "-bcc" or "-wrath" is in the project
+   version (tag).
 3. If it is included in the file name (it is by default) and #2 does not apply,
-   it will also be appended to the file label (i.e., the name shown on
-   CurseForge).
+   it will also be appended to the file label (i.e., the name shown in the file
+   list on CurseForge).
 
 ## Building for multiple game versions
 
@@ -273,9 +238,9 @@ versions, you no longer need to manually set the versions via `-g` or on the
 CurseForge website.
 
 __Note:__ CurseForge still requires that a fallback TOC file exists (the TOC
-file with the same name as the addon directory). So if you support all three
-game types, you may as well leave the fallback TOC file as one of the game types
-instead of creating three game type specific ones.
+file with the same name as the addon directory). So if you support all game
+types, you may as well leave the fallback TOC file as one of the game types
+instead of creating all game type specific ones.
 
 ### Single TOC file
 
@@ -286,13 +251,14 @@ based on your existing preprocessing logic.  The fallback TOC file will use
 the base interface value as it's version.
 
 ```toc
-## Interface: 90200
-## Interface-Classic: 11402
-## Interface-BCC: 20503
+## Interface: 90205
+## Interface-Classic: 11403
+## Interface-BCC: 20504
+## Interface-Wrath: 30400
 ```
 
 Splitting the above TOC file would end up with `MyAddon_Vanilla.toc`,
-`MyAddon_TBC.toc`, and `MyAddon.toc` (retail).
+`MyAddon_TBC.toc`, `MyAddon_Wrath.toc`, and `MyAddon.toc` (retail).
 
 If you use build version keywords (e.g., `@version-retail@` ... `@end-version-retail@`)
 for controlling what code blocks execute based on the build version, you
