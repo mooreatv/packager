@@ -4,7 +4,7 @@
 # shellcheck source=interfaces.txt
 source "$(dirname "${BASH_SOURCE[0]}")/interfaces.txt"
 
-variants="BCC Classic Mainline"
+variants="BCC Classic Mainline Wrath"
 
 for v in $variants; do
     echo "Toc for $v is ${!v}"
