@@ -74,7 +74,7 @@ if [[ ${BASH_VERSINFO[0]} -lt 4 ]] || [[ ${BASH_VERSINFO[0]} -eq 4 && ${BASH_VER
 fi
 
 # Game versions for uploading
-declare -A game_flavor=( ["retail"]="retail" ["classic"]="classic" ["bcc"]="bcc" ["mainline"]="retail" ["tbc"]="bcc" ["vanilla"]="classic" )
+declare -A game_flavor=( ["retail"]="retail" ["classic"]="classic" ["bcc"]="bcc" ["mainline"]="retail" ["tbc"]="bcc" ["vanilla"]="classic" ["wrath"]="wrath" ["wotlkc"]="wrath" )
 
 declare -A game_type_version=()           # type -> version
 declare -A game_type_interface=()         # type -> toc
@@ -86,6 +86,20 @@ declare -A toc_root_paths=()              # path -> directory name
 
 # Script return code
 exit_code=0
+
+retry() {
+	local result=0
+	local count=1
+	while [[ "$count" -le 3 ]]; do
+		[[ "$result" -ne 0 ]] && {
+			echo -e "\033[01;31mRetrying (${count}/3)\033[0m" >&2
+		}
+		"$@" && { result=0 && break; } || result="$?"
+		count="$((count + 1))"
+		sleep 3
+	done
+	return "$result"
+}
 
 # Escape a string for use in sed substitutions.
 escape_substr() {
@@ -102,7 +116,8 @@ filename_filter() {
 	[ -n "$skip_invalid" ] && invalid="&"
 	if [[ -n $game_type ]] && [[ "$game_type" != "retail" ]] && \
 		 [[ "$game_type" != "classic" || "${si_project_version,,}" != *"-classic"* ]] &&\
-		 [[ "$game_type" != "bcc" || "${si_project_version,,}" != *"-bcc"* ]]
+		 [[ "$game_type" != "bcc" || "${si_project_version,,}" != *"-bcc"* ]] &&\
+		 [[ "$game_type" != "wrath" || "${si_project_version,,}" != *"-wrath"* ]]
 	then
 		# only append the game type if the tag doesn't include it
 		classic="-$game_type"
@@ -203,7 +218,7 @@ while getopts ":celLzusSop:dw:a:r:t:g:m:n:" opt; do
 		g) # Set the game type or version
 			OPTARG="${OPTARG,,}"
 			case "$OPTARG" in
-				retail|classic|bcc) game_type="$OPTARG" ;; # game_version from toc
+				retail|classic|bcc|wrath) game_type="$OPTARG" ;; # game_version from toc
 				mainline) game_type="retail" ;;
 				*)
 					# Set game version (x.y.z)
@@ -219,6 +234,8 @@ while getopts ":celLzusSop:dw:a:r:t:g:m:n:" opt; do
 							game_type="classic"
 						elif [[ ${BASH_REMATCH[1]} == "2" ]]; then
 							game_type="bcc"
+						elif [[ ${BASH_REMATCH[1]} == "3" ]]; then
+							game_type="wrath"
 						else
 							game_type="retail"
 						fi
@@ -367,19 +384,19 @@ if [ -n "$TRAVIS" ]; then
 fi
 
 # Check for GitHub Actions
-if [ -n "$GITHUB_ACTIONS" ]; then
-	# Prevent duplicate builds
-	if [[ "$GITHUB_REF" == "refs/heads"* ]]; then
+if [[ -n $GITHUB_ACTIONS ]]; then
+	# Prevent duplicate builds from multiple pushes
+	if [[ $GITHUB_EVENT_NAME == "push" && $GITHUB_REF == "refs/heads"* ]]; then
 		check_tag=$( git -C "$topdir" tag --points-at HEAD )
-		if [ -n "$check_tag" ]; then
+		if [[ -n $check_tag ]]; then
 			echo "Found future tag \"${check_tag}\", not packaging."
 			exit 0
 		fi
+		unset check_tag
 	fi
 	start_group() { echo "##[group]$1"; }
 	end_group() { echo "##[endgroup]"; }
 fi
-unset check_tag
 
 # Load secrets
 if [ -f "$topdir/.env" ]; then
@@ -492,7 +509,8 @@ set_info_git() {
 	si_project_timestamp=$( git -C "$si_repo_dir" show --no-patch --format="%at" 2>/dev/null )
 	si_project_date_iso=$( TZ='' printf "%(%Y-%m-%dT%H:%M:%SZ)T" "$si_project_timestamp" )
 	si_project_date_integer=$( TZ='' printf "%(%Y%m%d%H%M%S)T" "$si_project_timestamp" )
-	# XXX --depth limits rev-list :\ [ ! -s "$(git rev-parse --git-dir)/shallow" ] || git fetch --unshallow --no-tags
+	# XXX --depth limits rev-list :\ [ -s "$si_repo_dir/$(git rev-parse --git-dir)/shallow" ] && git -C "$si_repo_dir" fetch --quiet --unshallow --no-tags
+	# actions/checkout using clone --filter=blob:none instead of their current unholy abomination would be nice
 	si_project_revision=$( git -C "$si_repo_dir" rev-list --count "$si_project_hash" 2>/dev/null )
 
 	# Get the tag for the HEAD.
@@ -527,66 +545,63 @@ set_info_svn() {
 	si_repo_dir="$1"
 	si_repo_type="svn"
 
-	# Temporary file to hold results of "svn info".
-	_si_svninfo="${si_repo_dir}/.svn/release_sh_svninfo"
-	svn info -r BASE "$si_repo_dir" 2>/dev/null > "$_si_svninfo"
-
-	if [ -s "$_si_svninfo" ]; then
-		_si_root=$( awk '/^Repository Root:/ { print $3; exit }' < "$_si_svninfo" )
-		_si_url=$( awk '/^URL:/ { print $2; exit }' < "$_si_svninfo" )
-		_si_revision=$( awk '/^Last Changed Rev:/ { print $NF; exit }' < "$_si_svninfo" )
-		si_repo_url=$_si_root
-
-		case ${_si_url#${_si_root}/} in
-			tags/*)
-				# Extract the tag from the URL.
-				si_tag=${_si_url#${_si_root}/tags/}
-				si_tag=${si_tag%%/*}
-				si_project_revision="$_si_revision"
-				;;
-			*)
-				# Check if the latest tag matches the working copy revision (/trunk checkout instead of /tags)
-				_si_tag_line=$( svn log --verbose --limit 1 "$_si_root/tags" 2>/dev/null | awk '/^   A/ { print $0; exit }' )
-				_si_tag=$( echo "$_si_tag_line" | awk '/^   A/ { print $2 }' | awk -F/ '{ print $NF }' )
-				# shellcheck disable=SC2001
-				_si_tag_from_revision=$( echo "$_si_tag_line" | sed -e 's/^.*:\([0-9]\{1,\}\)).*$/\1/' ) # (from /project/trunk:N)
-
-				if [ "$_si_tag_from_revision" = "$_si_revision" ]; then
-					si_tag="$_si_tag"
-					si_project_revision=$( svn info "$_si_root/tags/$si_tag" 2>/dev/null | awk '/^Last Changed Rev:/ { print $NF; exit }' )
-				else
-					# Set $si_project_revision to the highest revision of the project at the checkout path
-					si_project_revision=$( svn info --recursive "$si_repo_dir" 2>/dev/null | awk '/^Last Changed Rev:/ { print $NF }' | sort -nr | head -n1 )
-				fi
-				;;
-		esac
-
-		if [ -n "$si_tag" ]; then
-			si_project_version="$si_tag"
-		else
-			si_project_version="r$si_project_revision"
-		fi
-
-		# Get the previous tag and it's revision
-		_si_limit=$((si_project_revision - 1))
-		_si_tag=$( svn log --verbose --limit 1 "$_si_root/tags" -r $_si_limit:1 2>/dev/null | awk '/^   A/ { print $0; exit }' | awk '/^   A/ { print $2 }' | awk -F/ '{ print $NF }' )
-		if [ -n "$_si_tag" ]; then
-			si_previous_tag="$_si_tag"
-			si_previous_revision=$( svn info "$_si_root/tags/$_si_tag" 2>/dev/null | awk '/^Last Changed Rev:/ { print $NF; exit }' )
-		fi
-
-		# Populate filter vars.
-		si_project_author=$( awk '/^Last Changed Author:/ { print $0; exit }' < "$_si_svninfo" | cut -d" " -f4- )
-		_si_timestamp=$( awk '/^Last Changed Date:/ { print $4,$5; exit }' < "$_si_svninfo" )
-		si_project_timestamp=$( strtotime "$_si_timestamp" "%F %T" )
-		si_project_date_iso=$( TZ='' printf "%(%Y-%m-%dT%H:%M:%SZ)T" "$si_project_timestamp" )
-		si_project_date_integer=$( TZ='' printf "%(%Y%m%d%H%M%S)T" "$si_project_timestamp" )
-		# SVN repositories have no project hash.
-		si_project_hash=
-		si_project_abbreviated_hash=
-
-		rm -f "$_si_svninfo" 2>/dev/null
+	local _si_svninfo _si_url _si_revision _si_tag_line _si_tag _si_tag_from_revision _si_timestamp
+	_si_svninfo=$( retry svn info -r BASE "$si_repo_dir" 2>/dev/null )
+	if [[ -z "$_si_svninfo" ]]; then
+		echo "Unable to read svn repo at $si_repo_dir" >&2
+		exit 1
 	fi
+
+	si_repo_url=$( awk '/^Repository Root:/ { print $3; exit }' <<< "$_si_svninfo" )
+	_si_url=$( awk '/^URL:/ { print $2; exit }' <<< "$_si_svninfo" )
+	_si_revision=$( awk '/^Last Changed Rev:/ { print $NF; exit }' <<< "$_si_svninfo" )
+
+	case ${_si_url#"${si_repo_url}"/} in
+		tags/*)
+			# Extract the tag from the URL.
+			si_tag=${_si_url#"${si_repo_url}"/tags/}
+			si_tag=${si_tag%%/*}
+			si_project_revision="$_si_revision"
+			;;
+		*)
+			# Check if the latest tag matches the working copy revision (/trunk checkout instead of /tags)
+			_si_tag_line=$( retry svn log --verbose --limit 1 "$si_repo_url/tags" 2>/dev/null | awk '/^   A/ { print $0; exit }' )
+			_si_tag=$( echo "$_si_tag_line" | awk '/^   A/ { print $2 }' | awk -F/ '{ print $NF }' )
+			# shellcheck disable=SC2001
+			_si_tag_from_revision=$( echo "$_si_tag_line" | sed -e 's/^.*:\([0-9]\{1,\}\)).*$/\1/' ) # (from /project/trunk:N)
+
+			if [[ "$_si_tag_from_revision" == "$_si_revision" ]]; then
+				si_tag="$_si_tag"
+				si_project_revision=$( retry svn info "$si_repo_url/tags/$si_tag" 2>/dev/null | awk '/^Last Changed Rev:/ { print $NF; exit }' )
+			else
+				# Set $si_project_revision to the highest revision of the project at the checkout path
+				si_project_revision=$( svn info --recursive "$si_repo_dir" 2>/dev/null | awk '/^Last Changed Rev:/ { print $NF }' | sort -nr | head -n1 )
+			fi
+			;;
+	esac
+
+	if [[ -n "$si_tag" ]]; then
+		si_project_version="$si_tag"
+	else
+		si_project_version="r$si_project_revision"
+	fi
+
+	# Get the previous tag and it's revision
+	_si_tag=$( retry svn log --verbose --limit 1 "$si_repo_url/tags" -r $((si_project_revision - 1)):1 2>/dev/null | awk '/^   A/ { print $0; exit }' | awk '/^   A/ { print $2 }' | awk -F/ '{ print $NF }' )
+	if [[ -n "$_si_tag" ]]; then
+		si_previous_tag="$_si_tag"
+		si_previous_revision=$( retry svn info "$si_repo_url/tags/$_si_tag" 2>/dev/null | awk '/^Last Changed Rev:/ { print $NF; exit }' )
+	fi
+
+	# Populate filter vars.
+	si_project_author=$( awk '/^Last Changed Author:/ { print $0; exit }' <<< "$_si_svninfo" | cut -d" " -f4- )
+	_si_timestamp=$( awk '/^Last Changed Date:/ { print $4,$5; exit }' <<< "$_si_svninfo" )
+	si_project_timestamp=$( strtotime "$_si_timestamp" "%F %T" )
+	si_project_date_iso=$( TZ='' printf "%(%Y-%m-%dT%H:%M:%SZ)T" "$si_project_timestamp" )
+	si_project_date_integer=$( TZ='' printf "%(%Y%m%d%H%M%S)T" "$si_project_timestamp" )
+	# SVN repositories have no project hash.
+	si_project_hash=
+	si_project_abbreviated_hash=
 }
 
 set_info_hg() {
@@ -627,45 +642,45 @@ set_info_hg() {
 }
 
 set_info_file() {
-	if [ "$si_repo_type" = "git" ]; then
-		_si_file=${1#si_repo_dir} # need the path relative to the checkout
+	local _si_file="$1"
+	if [[ "$si_repo_type" = "git" ]]; then
+		local _si_file_dir=${_si_file%/*} # set the working directory to file's directory to allow for submodule file info
+		_si_file=${_si_file##*/} # just need the filename
 		# Populate filter vars from the last commit the file was included in.
-		si_file_hash=$( git -C "$si_repo_dir" log --max-count=1 --format="%H" "$_si_file" 2>/dev/null )
-		si_file_abbreviated_hash=$( git -C "$si_repo_dir" log --max-count=1 --abbrev=7 --format="%h" "$_si_file" 2>/dev/null )
-		si_file_author=$( git -C "$si_repo_dir" log --max-count=1 --format="%an" "$_si_file" 2>/dev/null )
-		si_file_timestamp=$( git -C "$si_repo_dir" log --max-count=1 --format="%at" "$_si_file" 2>/dev/null )
+		si_file_hash=$( git -C "$_si_file_dir" log --max-count=1 --format="%H" -- "$_si_file" 2>/dev/null )
+		si_file_abbreviated_hash=$( git -C "$_si_file_dir" log --max-count=1 --abbrev=7 --format="%h" -- "$_si_file" 2>/dev/null )
+		si_file_author=$( git -C "$_si_file_dir" log --max-count=1 --format="%an" -- "$_si_file" 2>/dev/null )
+		si_file_timestamp=$( git -C "$_si_file_dir" log --max-count=1 --format="%at" -- "$_si_file" 2>/dev/null )
 		si_file_date_iso=$( TZ='' printf "%(%Y-%m-%dT%H:%M:%SZ)T" "$si_file_timestamp" )
 		si_file_date_integer=$( TZ='' printf "%(%Y%m%d%H%M%S)T" "$si_file_timestamp" )
-		si_file_revision=$( git -C "$si_repo_dir" rev-list --count "$si_file_hash" 2>/dev/null ) # XXX checkout depth affects rev-list, see set_info_git
-	elif [ "$si_repo_type" = "svn" ]; then
-		_si_file="$1"
-		# Temporary file to hold results of "svn info".
-		_sif_svninfo="${si_repo_dir}/.svn/release_sh_svnfinfo"
-		svn info "$_si_file" 2>/dev/null > "$_sif_svninfo"
-		if [ -s "$_sif_svninfo" ]; then
+		si_file_revision=$( git -C "$_si_file_dir" rev-list --count "$si_file_hash" 2>/dev/null ) # XXX checkout depth affects rev-list, see set_info_git
+
+	elif [[ "$si_repo_type" = "svn" ]]; then
+		local _sif_svninfo _si_timestamp
+		_sif_svninfo=$( svn info "$_si_file" 2>/dev/null )
+		if [[ -n "$_sif_svninfo" ]]; then
 			# Populate filter vars.
-			si_file_revision=$( awk '/^Last Changed Rev:/ { print $NF; exit }' < "$_sif_svninfo" )
-			si_file_author=$( awk '/^Last Changed Author:/ { print $0; exit }' < "$_sif_svninfo" | cut -d" " -f4- )
-			_si_timestamp=$( awk '/^Last Changed Date:/ { print $4,$5,$6; exit }' < "$_sif_svninfo" )
+			si_file_revision=$( awk '/^Last Changed Rev:/ { print $NF; exit }' <<< "$_sif_svninfo" )
+			si_file_author=$( awk '/^Last Changed Author:/ { print $0; exit }' <<< "$_sif_svninfo" | cut -d" " -f4- )
+			_si_timestamp=$( awk '/^Last Changed Date:/ { print $4,$5,$6; exit }' <<< "$_sif_svninfo" )
 			si_file_timestamp=$( strtotime "$_si_timestamp" "%F %T %z" )
 			si_file_date_iso=$( TZ='' printf "%(%Y-%m-%dT%H:%M:%SZ)T" "$si_file_timestamp" )
 			si_file_date_integer=$( TZ='' printf "%(%Y%m%d%H%M%S)T" "$si_file_timestamp" )
-			# SVN repositories have no project hash.
-			si_file_hash=
-			si_file_abbreviated_hash=
-
-			rm -f "$_sif_svninfo" 2>/dev/null
+			# Use the file checksum.
+			si_file_hash=$( awk '/^Checksum:/ { print $2; exit }' <<< "$_sif_svninfo" )
+			si_file_abbreviated_hash=${si_file_hash:0:7}
 		fi
-	elif [ "$si_repo_type" = "hg" ]; then
-		_si_file=${1#si_repo_dir} # need the path relative to the checkout
+
+	elif [[ "$si_repo_type" = "hg" ]]; then
 		# Populate filter vars.
-		si_file_hash=$( hg --cwd "$si_repo_dir" log --limit 1 --template '{node}' "$_si_file" 2>/dev/null )
-		si_file_abbreviated_hash=$( hg --cwd "$si_repo_dir" log --limit 1 --template '{node|short}' "$_si_file" 2>/dev/null )
-		si_file_author=$( hg --cwd "$si_repo_dir" log --limit 1 --template '{author}' "$_si_file" 2>/dev/null )
-		si_file_timestamp=$( hg --cwd "$si_repo_dir" log --limit 1 --template '{date}' "$_si_file" 2>/dev/null | cut -d. -f1 )
+		si_file_hash=$( hg log --limit 1 --template '{node}' "$_si_file" 2>/dev/null )
+		si_file_abbreviated_hash=$( hg log --limit 1 --template '{node|short}' "$_si_file" 2>/dev/null )
+		si_file_author=$( hg log --limit 1 --template '{author}' "$_si_file" 2>/dev/null )
+		si_file_timestamp=$( hg log --limit 1 --template '{date}' "$_si_file" 2>/dev/null | cut -d. -f1 )
 		si_file_date_iso=$( TZ='' printf "%(%Y-%m-%dT%H:%M:%SZ)T" "$si_file_timestamp" )
 		si_file_date_integer=$( TZ='' printf "%(%Y%m%d%H%M%S)T" "$si_file_timestamp" )
-		si_file_revision=$( hg --cwd "$si_repo_dir" log --limit 1 --template '{rev}' "$_si_file" 2>/dev/null )
+		si_file_revision=$( hg log --limit 1 --template '{rev}' "$_si_file" 2>/dev/null )
+
 	fi
 }
 
@@ -713,8 +728,9 @@ carriage_return=$( printf "\r" )
 
 # Returns 0 if $1 matches one of the colon-separated patterns in $2.
 match_pattern() {
-	_mp_file=$1
-	_mp_list="$2:"
+	local _mp_file="$1"
+	local _mp_list="$2:"
+	local _mp_pattern
 	while [ -n "$_mp_list" ]; do
 		_mp_pattern=${_mp_list%%:*}
 		_mp_list=${_mp_list#*:}
@@ -733,7 +749,7 @@ match_pattern() {
 declare -A yaml_bool=( ["yes"]="yes" ["true"]="yes" ["on"]="yes" ["false"]="no" ["off"]="no" ["no"]="no" )
 yaml_keyvalue() {
 	yaml_key=${1%%:*}
-	yaml_value=${1#$yaml_key:}
+	yaml_value=${1#"$yaml_key":}
 	yaml_value=${yaml_value#"${yaml_value%%[! ]*}"} # trim leading whitespace
 	if [[ -n "$yaml_value" && -n "${yaml_bool[${yaml_value,,}]}" ]]; then # normalize booleans
 		yaml_value="${yaml_bool[$yaml_value]}"
@@ -768,7 +784,7 @@ changelog_markup="text"
 enable_nolib_creation=
 ignore=
 unchanged=
-contents=
+zip_root_dirs=()
 nolib_exclude=
 wowi_gen_changelog="true"
 wowi_archive="true"
@@ -1051,6 +1067,7 @@ do_toc() {
 		"") toc_game_type= ;;
 		11*) toc_game_type="classic" ;;
 		20*) toc_game_type="bcc" ;;
+		30*) toc_game_type="wrath" ;;
 		*) toc_game_type="retail"
 	esac
 	si_game_type_interface=()
@@ -1059,7 +1076,7 @@ do_toc() {
 
 	root_toc_version="$toc_version"
 
-	if [[ ${toc_name} =~ "$package_name"[-_](Mainline|Classic|Vanilla|BCC|TBC)\.toc$ ]]; then
+	if [[ ${toc_name} =~ "$package_name"[-_](Mainline|Classic|Vanilla|BCC|TBC|Wrath|WOTLKC)\.toc$ ]]; then
 		# Flavored
 		if [[ -z "$toc_version" ]]; then
 			echo "$toc_name is missing an interface version." >&2
@@ -1090,6 +1107,7 @@ do_toc() {
 			case $toc_version in
 				11*) toc_game_type="classic" ;;
 				20*) toc_game_type="bcc" ;;
+				30*) toc_game_type="wrath" ;;
 				*) toc_game_type="retail"
 			esac
 		fi
@@ -1100,6 +1118,7 @@ do_toc() {
 			case $toc_game_type in
 				classic) toc_version=$( sed -n '/@non-[-a-z]*@/,/@end-non-[-a-z]*@/{//b;p}' <<< "$toc_file" | awk '/#[[:blank:]]*## Interface:[[:blank:]]*(11)/ { print $NF; exit }' ) ;;
 				bcc) toc_version=$( sed -n '/@non-[-a-z]*@/,/@end-non-[-a-z]*@/{//b;p}' <<< "$toc_file" | awk '/#[[:blank:]]*## Interface:[[:blank:]]*(20)/ { print $NF; exit }' ) ;;
+				wrath) toc_version=$( sed -n '/@non-[-a-z]*@/,/@end-non-[-a-z]*@/{//b;p}' <<< "$toc_file" | awk '/#[[:blank:]]*## Interface:[[:blank:]]*(30)/ { print $NF; exit }' ) ;;
 			esac
 			# This becomes the actual interface version after replacements
 			root_toc_version="$toc_version"
@@ -1159,6 +1178,7 @@ set_build_version() {
 				case $toc_version in
 					11*) toc_game_type="classic" ;;
 					20*) toc_game_type="bcc" ;;
+					30*) toc_game_type="wrath" ;;
 					*) toc_game_type="retail"
 				esac
 				if [[ -z $game_type || $game_type == "$toc_game_type" ]]; then
@@ -1190,14 +1210,14 @@ if [[ -z "$package" ]]; then
 		exit 1
 	fi
 	package=${package%.toc}
-	if [[ $package =~ ^(.*)([-_](Mainline|Classic|Vanilla|BCC|TBC))$ ]]; then
+	if [[ $package =~ ^(.*)([-_](Mainline|Classic|Vanilla|BCC|TBC|Wrath|WOTLKC))$ ]]; then
 		echo "Ambiguous addon name. No fallback TOC file or addon name includes an expansion suffix (${BASH_REMATCH[2]}). Set 'package-as' in .pkgmeta" >&2
 		exit 1
 	fi
 fi
 
 # Parse the project root TOC files for info first
-for toc_path in "$topdir/$package"{,-Mainline,_Mainline,-Classic,_Classic,-Vanilla,_Vanilla,-BCC,_BCC,-TBC,_TBC}.toc; do
+for toc_path in "$topdir/$package"{,-Mainline,_Mainline,-Classic,_Classic,-Vanilla,_Vanilla,-BCC,_BCC,-TBC,_TBC,-Wrath,_Wrath,-WOTLKC,_WOTLKC}.toc; do
 	if [[ -f "$toc_path" ]]; then
 		set_toc_project_info "$toc_path"
 		toc_root_paths["$topdir"]="$package"
@@ -1213,7 +1233,7 @@ done
 
 # Parse project TOC files
 for path in "${!toc_root_paths[@]}"; do
-	for toc_path in "$path/${toc_root_paths[$path]}"{,-Mainline,_Mainline,-Classic,_Classic,-Vanilla,_Vanilla,-BCC,_BCC,-TBC,_TBC}.toc; do
+	for toc_path in "$path/${toc_root_paths[$path]}"{,-Mainline,_Mainline,-Classic,_Classic,-Vanilla,_Vanilla,-BCC,_BCC,-TBC,_TBC,-Wrath,_Wrath,-WOTLKC,_WOTLKC}.toc; do
 		if [[ -f "$toc_path" ]]; then
 			set_toc_project_info "$toc_path"
 			do_toc "$toc_path" "${toc_root_paths[$path]}"
@@ -1308,7 +1328,7 @@ if [ ! -d "$pkgdir" ]; then
 fi
 
 # Set the contents of the addon zipfile.
-contents="$package"
+zip_root_dirs+=("$package")
 
 ###
 ### Create filters for pass-through processing of files to replace repository keywords.
@@ -1670,6 +1690,7 @@ copy_directory_tree() {
 							[ "$_cdt_gametype" != "retail" ] && _cdt_filters+="|lua_filter version-retail|lua_filter retail"
 							[ "$_cdt_gametype" != "classic" ] && _cdt_filters+="|lua_filter version-classic"
 							[ "$_cdt_gametype" != "bcc" ] && _cdt_filters+="|lua_filter version-bcc"
+							[ "$_cdt_gametype" != "wrath" ] && _cdt_filters+="|lua_filter version-wrath"
 							[ -n "$_cdt_localization" ] && _cdt_filters+="|localization_filter"
 							;;
 						*.xml)
@@ -1680,6 +1701,7 @@ copy_directory_tree() {
 							[ "$_cdt_gametype" != "retail" ] && _cdt_filters+="|xml_filter version-retail|xml_filter retail"
 							[ "$_cdt_gametype" != "classic" ] && _cdt_filters+="|xml_filter version-classic"
 							[ "$_cdt_gametype" != "bcc" ] && _cdt_filters+="|xml_filter version-bcc"
+							[ "$_cdt_gametype" != "wrath" ] && _cdt_filters+="|xml_filter version-wrath"
 							;;
 						*.toc)
 							# We only care about processing project TOC files
@@ -1691,6 +1713,7 @@ copy_directory_tree() {
 									case ${toc_root_interface["$_cdt_srcdir/$file"]} in
 										11*) _cdt_gametype="classic" ;;
 										20*) _cdt_gametype="bcc" ;;
+										30*) _cdt_gametype="wrath" ;;
 										*) _cdt_gametype="retail"
 									esac
 								fi
@@ -1702,6 +1725,7 @@ copy_directory_tree() {
 								_cdt_filters+="|toc_filter version-retail $([[ "$_cdt_gametype" != "retail" ]] && echo "true")"
 								_cdt_filters+="|toc_filter version-classic $([[ "$_cdt_gametype" != "classic" ]] && echo "true")"
 								_cdt_filters+="|toc_filter version-bcc $([[ "$_cdt_gametype" != "bcc" ]] && echo "true")"
+								_cdt_filters+="|toc_filter version-wrath $([[ "$_cdt_gametype" != "wrath" ]] && echo "true")"
 								_cdt_filters+="|toc_interface_filter '${si_game_type_interface_all[${_cdt_gametype:- }]}' '${toc_root_interface["$_cdt_srcdir/$file"]}'"
 								[ -n "$_cdt_localization" ] && _cdt_filters+="|localization_filter"
 							fi
@@ -1717,10 +1741,10 @@ copy_directory_tree() {
 					echo "  Copying: $file"
 
 					# Make sure we're not causing any surprises
-					if [[ -z $_cdt_gametype && ( $file == *".lua" || $file == *".xml" || $file == *".toc" ) ]] && grep -q '@\(non-\)\?version-\(retail\|classic\|bcc\)@' "$_cdt_srcdir/$file"; then
+					if [[ -z $_cdt_gametype && ( $file == *".lua" || $file == *".xml" || $file == *".toc" ) ]] && grep -q '@\(non-\)\?version-\(retail\|classic\|bcc\|wrath\)@' "$_cdt_srcdir/$file"; then
 						echo "    Error! Build type version keywords are not allowed in a multi-version build." >&2
 						echo "           These should be replaced with lua conditional statements:" >&2
-						grep -n '@\(non-\)\?version-\(retail\|classic\|bcc\)@' "$_cdt_srcdir/$file" | sed 's/^/             /' >&2
+						grep -n '@\(non-\)\?version-\(retail\|classic\|bcc\|wrath\)@' "$_cdt_srcdir/$file" | sed 's/^/             /' >&2
 						echo "           See https://wowpedia.fandom.com/wiki/WOW_PROJECT_ID" >&2
 						exit 1
 					fi
@@ -1738,6 +1762,7 @@ copy_directory_tree() {
 								retail) new_file+="_Mainline.toc" ;;
 								classic) new_file+="_Vanilla.toc" ;;
 								bcc) new_file+="_TBC.toc" ;;
+								wrath) new_file+="_Wrath.toc" ;;
 							esac
 
 							echo "    Creating $new_file [$toc_version]"
@@ -1751,6 +1776,7 @@ copy_directory_tree() {
 							_cdt_filters+="|toc_filter version-retail $([[ "$type" != "retail" ]] && echo "true")"
 							_cdt_filters+="|toc_filter version-classic $([[ "$type" != "classic" ]] && echo "true")"
 							_cdt_filters+="|toc_filter version-bcc $([[ "$type" != "bcc" ]] && echo "true")"
+							_cdt_filters+="|toc_filter version-wrath $([[ "$type" != "wrath" ]] && echo "true")"
 							_cdt_filters+="|toc_interface_filter '$toc_version' '$root_toc_version'"
 							_cdt_filters+="|line_ending_filter"
 
@@ -1799,20 +1825,6 @@ parse_ignore "$pkgmeta_file"
 ###
 ### Process .pkgmeta again to perform any pre-move-folders actions.
 ###
-
-retry() {
-	local result=0
-	local count=1
-	while [[ "$count" -le 3 ]]; do
-		[[ "$result" -ne 0 ]] && {
-			echo -e "\033[01;31mRetrying (${count}/3)\033[0m" >&2
-		}
-		"$@" && { result=0 && break; } || result="$?"
-		count="$((count + 1))"
-		sleep 3
-	done
-	return "$result"
-}
 
 # Checkout the external into a ".checkout" subdirectory of the final directory.
 checkout_external() {
@@ -1869,7 +1881,7 @@ checkout_external() {
 		else
 			_cqe_svn_tag_url="${_cqe_svn_trunk_url%/trunk}/tags"
 			if [ "$_external_tag" = "latest" ]; then
-				_external_tag=$( svn log --verbose --limit 1 "$_cqe_svn_tag_url" 2>/dev/null | awk '/^   A \/tags\// { print $2; exit }' | awk -F/ '{ print $3 }' )
+				_external_tag=$( retry svn log --verbose --limit 1 "$_cqe_svn_tag_url" 2>/dev/null | awk '/^   A \/tags\// { print $2; exit }' | awk -F/ '{ print $3 }' )
 				if [ -z "$_external_tag" ]; then
 					_external_tag="latest"
 				fi
@@ -1887,7 +1899,7 @@ checkout_external() {
 				retry svn checkout -q "$_cqe_external_uri" "$_cqe_checkout_dir" || return 1
 			fi
 		fi
-		set_info_svn "$_cqe_checkout_dir"
+		set_info_svn "$_cqe_checkout_dir" || return 1
 		echo "Checked out r$si_project_revision"
 	elif [ "$_external_type" = "hg" ]; then
 		if [ -z "$_external_tag" ]; then
@@ -2285,7 +2297,8 @@ else
 		## $project_version ($changelog_date)
 
 		EOF
-		svn log "$topdir" "$_changelog_range" --xml \
+		_svn_changelog=$( retry svn log "$topdir" "$_changelog_range" --xml )
+		echo "$_svn_changelog" \
 			| awk '/<msg>/,/<\/msg>/' \
 			| sed -e 's/<msg>/###/g' -e 's/<\/msg>//g' \
 			      -e 's/^/    /g' -e 's/^ *$//g' -e 's/^    ###/- /g' -e 's/$/  /' \
@@ -2304,7 +2317,7 @@ else
 
 			[list]
 			EOF
-			svn log "$topdir" "$_changelog_range" --xml \
+			echo "$_svn_changelog" \
 				| awk '/<msg>/,/<\/msg>/' \
 				| sed -e 's/<msg>/###/g' -e 's/<\/msg>//g' \
 				      -e 's/^/    /g' -e 's/^ *$//g' -e 's/^    ###/[*]/g' \
@@ -2313,6 +2326,7 @@ else
 				| line_ending_filter >> "$wowi_changelog"
 			echo "[/list]" | line_ending_filter >> "$wowi_changelog"
 		fi
+		unset _svn_changelog
 
 	elif [ "$repository_type" = "hg" ]; then
 		if [ -n "$previous_revision" ]; then
@@ -2392,7 +2406,7 @@ if [ -f "$pkgmeta_file" ]; then
 									fi
 									echo "Moving $yaml_key to $yaml_value"
 									mv -f "$srcdir"/* "$destdir" && rm -fr "$srcdir"
-									contents="$contents $yaml_value"
+									zip_root_dirs+=("$yaml_value")
 									# Check to see if the base source directory is empty
 									_mf_basedir="/${yaml_key%/*}"
 									while [[ -n "$_mf_basedir" && -z "$( ls -A "${releasedir}${_mf_basedir}" )" ]]; do
@@ -2453,8 +2467,7 @@ if [ -z "$skip_zipfile" ]; then
 	if [ -f "$archive" ]; then
 		rm -f "$archive"
 	fi
-	# shellcheck disable=SC2086
-	( cd "$releasedir" && zip -X -r "$archive" $contents )
+	( cd "$releasedir" && zip -X -r "$archive" "${zip_root_dirs[@]}" )
 
 	if [ ! -f "$archive" ]; then
 		exit 1
@@ -2481,7 +2494,7 @@ if [ -z "$skip_zipfile" ]; then
 		fi
 		# set noglob so each nolib_exclude path gets quoted instead of expanded
 		# shellcheck disable=SC2086
-		( set -f; cd "$releasedir" && zip -X -r -q "$nolib_archive" $contents -x $nolib_exclude )
+		( set -f; cd "$releasedir" && zip -X -r -q "$nolib_archive" "${zip_root_dirs[@]}" -x $nolib_exclude )
 
 		if [ ! -f "$nolib_archive" ]; then
 			exit_code=1
@@ -2506,12 +2519,13 @@ upload_curseforge() {
 		_cf_game_version_id=
 		_cf_game_version=
 		local version_name version_id game_id
-		for type in "classic" "bcc" "retail"; do  # sort order (last id is show as the version on the project's files page apparently)
+		for type in "classic" "bcc" "wrath" "retail"; do  # sort order (last id is show as the version on the project's files page apparently)
 			version_name="${game_type_version[$type]}"
 			[[ -z $version_name ]] && continue
 			case $type in
 				classic) game_id=67408 ;;
 				bcc) game_id=73246 ;;
+				wrath) game_id=73713 ;;
 				*) game_id=517
 			esac
 
@@ -2610,33 +2624,30 @@ upload_wowinterface() {
 		return 0
 	fi
 
-	local _wowi_game_version _wowi_versions _wowi_versions_type
+	local _wowi_versions _wowi_game_version
 	_wowi_versions=$( curl -s https://api.wowinterface.com/addons/compatible.json )
 	if [ -n "$_wowi_versions" ]; then
-		_wowi_game_version=
-		local version
+		local version wowi_type
 		for type in "${!game_type_version[@]}"; do
 			version="${game_type_version[$type]}"
+			case $type in
+				classic) wowi_type="Classic" ;;
+				bcc) wowi_type="TBC-Classic" ;;
+				wrath) wowi_type="WOTLK-Classic" ;;
+				*) wowi_type="Retail"
+			esac
 			# check the version
 			if ! jq -e --arg v "$version" 'map(select(.id == $v)) | length > 0' <<< "$_wowi_versions" &>/dev/null; then
-				# split out the versions that match the version we're checking against (to keep things more readable)
-				_wowi_versions_type=$( echo "$_wowi_versions" | jq -c --arg v "$version" 'map(select( (.id | .[:2]) == ($v | .[:2]) ))' )
-				if [[ $_wowi_versions_type == "[]" ]]; then
-					# retail default. the version doesn't match a classic version nor actual retail versions, but we fallback to retail
-					version=$( echo "$_wowi_versions" | jq -r '.[] | select(.default == true ) | .id' )
-				else
-					# use the next highest version (try to avoid testing versions)
-					version=$( echo "$_wowi_versions_type" | jq -r --arg v "$version" 'map(select(.id < $v)) | max_by(.id) | .id // empty' )
-					if [[ -z $version ]]; then
-						if [[ $type == "retail" ]]; then # cheating
-							version=$( echo "$_wowi_versions" | jq -r '.[] | select(.default == true ) | .id' )
-						else # just grab the highest version
-							version=$( echo "$_wowi_versions_type" | jq -r 'max_by(.id) | .id' )
-						fi
+				# use the next highest version (try to avoid testing versions)
+				version=$( echo "$_wowi_versions" | jq -r --arg v "$version" --arg t "$wowi_type" 'map(select(.game == $t and .id < $v)) | max_by(.id) | .id // empty' )
+				if [[ -z $version ]]; then
+					# now that .game exists, maybe default per type is in the future?
+					version=$( echo "$_wowi_versions" | jq -r --arg t "$wowi_type" '.[] | select(.game == $t and .default == true ) | .id // empty' )
+					if [[ -z $version ]]; then # just grab the highest version
+						version=$( echo "$_wowi_versions" | jq -r --arg t "$wowi_type" 'map(select(.game == $t)) | max_by(.id) | .id' )
 					fi
 				fi
 				echo "WARNING: No WoWInterface game version match for \"${game_type_version[$type]}\", using \"$version\"" >&2
-				_wowi_versions_type=
 			fi
 			_wowi_game_version+=",${version}"
 		done
@@ -2722,8 +2733,11 @@ upload_wago() {
 		local version wago_type
 		for type in "${!game_type_version[@]}"; do
 			version="${game_type_version[$type]}"
-			wago_type="$type"
-			[[ "$wago_type" == "bcc" ]] && wago_type="bc"
+			case $type in
+				bcc) wago_type="bc" ;;
+				wrath) wago_type="wotlk" ;;
+				*) wago_type="$type"
+			esac
 			# check the version
 			if ! jq -e --arg t "$wago_type" --arg v "$version" '.[$t] | index($v)' <<< "$_wago_versions" &>/dev/null; then
 				# no match, so grab the next highest version (try to avoid testing versions)
