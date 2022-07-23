@@ -1172,7 +1172,8 @@ set_build_version() {
 	local toc_game_type version
 
 	if [[ -z "$game_version" ]]; then
-		for path in "${!toc_interfaces[@]}"; do
+		readarray -t sorted < <(for a in "${!toc_interfaces[@]}"; do echo "$a"; done | sort)
+		for path in "${sorted[@]}"; do
 			if [[ -z "$split" && -z "$game_type" ]]; then
 				# no split and no game type means we should use the root interface value
 				# (blows up if one isn't set? should)
