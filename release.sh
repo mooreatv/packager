@@ -59,6 +59,7 @@ skip_localization=
 skip_zipfile=
 skip_upload=
 skip_cf_upload=
+skip_invalid=
 pkgmeta_file=
 game_version=
 game_type=
@@ -1181,6 +1182,7 @@ set_build_version() {
 			fi
 			declare -a versions
 			IFS=':' read -ra versions <<< "$version"
+			echo "XXX 1185 : $path $split $game_type ${versions[@]}"
 			for toc_version in "${versions[@]}"; do
 				case $toc_version in
 					11*) toc_game_type="classic" ;;
@@ -1194,7 +1196,7 @@ set_build_version() {
 				fi
 			done
 		done
-
+		echo "XXX 1199 : ${game_type_version[*]}"
 		if [[ -n "$game_type" ]]; then
 			game_version="${game_type_version[$game_type]}"
 		else
@@ -1551,6 +1553,7 @@ toc_interface_filter() {
 		if [ -n "$current_toc_version" ]; then # rewrite
 			sed -e $'1s/^\xEF\xBB\xBF//' -e 's/^## Interface:.*$/## Interface: '"$toc_version"'/' -e '/^## Interface-/d'
 		else # add
+			# shellcheck disable=SC1004
 			sed -e $'1s/^\xEF\xBB\xBF//' -e '1i\
 ## Interface: '"$toc_version" -e '/^## Interface-/d'
 		fi
@@ -2910,7 +2913,7 @@ upload_github() {
 	jq -c '.' <<< "$_gh_metadata" > "$versionfile" || echo "There was an error creating release.json" >&2
 
 	echo "XXX json:"
-	cat $versionfile
+	cat "$versionfile"
 
 	_gh_payload=$( cat <<-EOF
 	{
