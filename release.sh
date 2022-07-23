@@ -33,8 +33,6 @@
 #   SC2031: var was modified in a subshell. That change might be lost.
 # shellcheck disable=SC2295,SC2030,SC2031
 
-echo "XXX ${BASH_VERSION}, $(uname -r)"
-
 ## USER OPTIONS
 
 # Secrets for uploading
@@ -1067,8 +1065,6 @@ do_toc() {
 
 	toc_version=$( awk '/^## Interface:/ { print $NF; exit }' <<< "$toc_file" )
 
-	echo "XXX $toc_path $toc_version"
-
 	case $toc_version in
 		"") toc_game_type= ;;
 		11*) toc_game_type="classic" ;;
@@ -1139,8 +1135,6 @@ do_toc() {
 			exit 1
 		fi
 
-		echo "XXX main toc $toc_game_type : ${si_game_type_interface_all[$toc_game_type]} / $toc_version"
-
 		# Don't overwrite a specific version
 		if [[ -z "${si_game_type_interface_all[$toc_game_type]}" ]]; then
 			si_game_type_interface_all[$toc_game_type]="$toc_version"
@@ -1172,7 +1166,7 @@ set_build_version() {
 	local toc_game_type version
 
 	if [[ -z "$game_version" ]]; then
-		readarray -t sorted < <(for a in "${!toc_interfaces[@]}"; do echo "$a"; done | sort)
+		readarray -t sorted < <(for a in "${!toc_interfaces[@]}"; do echo "$a"; done | sort -r)
 		for path in "${sorted[@]}"; do
 			if [[ -z "$split" && -z "$game_type" ]]; then
 				# no split and no game type means we should use the root interface value
@@ -1183,7 +1177,6 @@ set_build_version() {
 			fi
 			declare -a versions
 			IFS=':' read -ra versions <<< "$version"
-			echo "XXX 1185 : $path $split $game_type ${versions[@]}"
 			for toc_version in "${versions[@]}"; do
 				case $toc_version in
 					11*) toc_game_type="classic" ;;
@@ -1197,7 +1190,6 @@ set_build_version() {
 				fi
 			done
 		done
-		echo "XXX 1199 : ${game_type_version[*]}"
 		if [[ -n "$game_type" ]]; then
 			game_version="${game_type_version[$game_type]}"
 		else
@@ -2912,9 +2904,6 @@ upload_github() {
 
 	versionfile="$releasedir/release.json"
 	jq -c '.' <<< "$_gh_metadata" > "$versionfile" || echo "There was an error creating release.json" >&2
-
-	echo "XXX json:"
-	cat "$versionfile"
 
 	_gh_payload=$( cat <<-EOF
 	{
