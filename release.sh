@@ -33,6 +33,8 @@
 #   SC2031: var was modified in a subshell. That change might be lost.
 # shellcheck disable=SC2295,SC2030,SC2031
 
+echo "XXX ${BASH_VERSION}, $(uname -r)"
+
 ## USER OPTIONS
 
 # Secrets for uploading
