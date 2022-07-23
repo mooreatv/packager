@@ -1064,7 +1064,6 @@ do_toc() {
 	)
 
 	toc_version=$( awk '/^## Interface:/ { print $NF; exit }' <<< "$toc_file" )
-
 	case $toc_version in
 		"") toc_game_type= ;;
 		11*) toc_game_type="classic" ;;
@@ -1190,6 +1189,7 @@ set_build_version() {
 				fi
 			done
 		done
+
 		if [[ -n "$game_type" ]]; then
 			game_version="${game_type_version[$game_type]}"
 		else
