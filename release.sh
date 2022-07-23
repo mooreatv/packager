@@ -1063,6 +1063,9 @@ do_toc() {
 	)
 
 	toc_version=$( awk '/^## Interface:/ { print $NF; exit }' <<< "$toc_file" )
+
+	echo "XXX $toc_path $toc_version"
+
 	case $toc_version in
 		"") toc_game_type= ;;
 		11*) toc_game_type="classic" ;;
@@ -1132,6 +1135,8 @@ do_toc() {
 			fi
 			exit 1
 		fi
+
+		echo "XXX main toc $toc_game_type : ${si_game_type_interface_all[$toc_game_type]} / $toc_version"
 
 		# Don't overwrite a specific version
 		if [[ -z "${si_game_type_interface_all[$toc_game_type]}" ]]; then
@@ -2901,6 +2906,9 @@ upload_github() {
 
 	versionfile="$releasedir/release.json"
 	jq -c '.' <<< "$_gh_metadata" > "$versionfile" || echo "There was an error creating release.json" >&2
+
+	echo "XXX json:"
+	cat $versionfile
 
 	_gh_payload=$( cat <<-EOF
 	{
