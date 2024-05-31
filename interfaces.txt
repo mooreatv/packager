@@ -1,5 +1,3 @@
 Mainline=100207
-BCC=20504
 Classic=11502
-Wrath=30403
 Cata=40400
