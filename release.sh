@@ -1081,7 +1081,7 @@ do_toc() {
 		fi
 		local toc_file_game_type="${game_flavor[${BASH_REMATCH[1],,}]}"
 		if [[ "$toc_file_game_type" != "$toc_game_type" ]]; then
-			echo "$toc_name has an interface version ($toc_version) that is not compatible with \"$toc_file_game_type\"." >&2
+			echo "$toc_name has an interface version ($toc_version) that is not compatible with \"$toc_file_game_type\" found \"$toc_game_type\"." >&2
 			exit 1
 		fi
 	else
