@@ -1063,8 +1063,8 @@ do_toc() {
 	toc_version=$( awk '/^## Interface:/ { print $NF; exit }' <<< "$toc_file" )
 	case $toc_version in
 		"") toc_game_type= ;;
-		11*) toc_game_type="classic" ;;
-		40*) toc_game_type="cata" ;;
+		11???) toc_game_type="classic" ;;
+		40???) toc_game_type="cata" ;;
 		*) toc_game_type="retail"
 	esac
 	si_game_type_interface=()
