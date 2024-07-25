@@ -1102,8 +1102,8 @@ do_toc() {
 		if [[ -z "$toc_version" ]] || [[ -n "$game_type" && -n "$game_type_toc_version" && "$game_type_toc_version" != "$toc_version" ]]; then
 			toc_version="$game_type_toc_version"
 			case $toc_version in
-				11*) toc_game_type="classic" ;;
-				40*) toc_game_type="cata" ;;
+				11???) toc_game_type="classic" ;;
+				40???) toc_game_type="cata" ;;
 				*) toc_game_type="retail"
 			esac
 		fi
@@ -1172,7 +1172,7 @@ set_build_version() {
 			IFS=':' read -ra versions <<< "$version"
 			for toc_version in "${versions[@]}"; do
 				case $toc_version in
-					11*) toc_game_type="classic" ;;
+					11???) toc_game_type="classic" ;;
 					40*) toc_game_type="cata" ;;
 					*) toc_game_type="retail"
 				esac
@@ -1705,7 +1705,7 @@ copy_directory_tree() {
 								# Process the fallback TOC file according to it's base interface version
 								if [[ -z $_cdt_gametype && -n $_cdt_split ]]; then
 									case ${toc_root_interface["$_cdt_srcdir/$file"]} in
-										11*) _cdt_gametype="classic" ;;
+										11???) _cdt_gametype="classic" ;;
 										40*) _cdt_gametype="cata" ;;
 										*) _cdt_gametype="retail"
 									esac
