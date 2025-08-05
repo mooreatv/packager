@@ -1488,7 +1488,7 @@ localization_filter() {
 						echo -n "$_ul_prefix"
 
 						# Fetch the localization data, but don't output anything if there is an error.
-						curl -s -H "x-api-token: $cf_token" "${_ul_url}" | awk -v url="$_ul_url" '/^{"error/ { o="    Error! "$0"\n           "url; print o >"/dev/stderr"; exit 1 } /<!DOCTYPE/ { print "    Error! Invalid output\n           "url >"/dev/stderr"; exit 1 } /^'"$_ul_tablename"' = '"$_ul_tablename"' or \{\}/ { next } { print }'
+						curl -L -s -H "x-api-token: $cf_token" "${_ul_url}" | awk -v url="$_ul_url" '/^{"error/ { o="    Error! "$0"\n           "url; print o >"/dev/stderr"; exit 1 } /<!DOCTYPE/ { print "    Error! Invalid output\n           "url >"/dev/stderr"; exit 1 } /^'"$_ul_tablename"' = '"$_ul_tablename"' or \{\}/ { next } { print }'
 
 						# Insert a trailing blank line to match CF packager.
 						if [ -z "$_ul_eof" ]; then
@@ -1496,7 +1496,7 @@ localization_filter() {
 						fi
 					else
 						# Parse out a single phrase. This is kind of expensive, but caching would be way too much effort to optimize for what is basically an edge case.
-						_ul_value=$( curl -s -H "x-api-token: $cf_token" "${_ul_url}" | awk -v url="$_ul_url" '/^{"error/ { o="    Error! "$0"\n           "url; print o >"/dev/stderr"; exit 1 } /<!DOCTYPE/ { print "    Error! Invalid output\n           "url >"/dev/stderr"; exit 1 } { print }' | sed -n '/L\["'"$_ul_singlekey"'"\]/p' | sed 's/^.* = "\(.*\)"/\1/' )
+						_ul_value=$( curl -L -s -H "x-api-token: $cf_token" "${_ul_url}" | awk -v url="$_ul_url" '/^{"error/ { o="    Error! "$0"\n           "url; print o >"/dev/stderr"; exit 1 } /<!DOCTYPE/ { print "    Error! Invalid output\n           "url >"/dev/stderr"; exit 1 } { print }' | sed -n '/L\["'"$_ul_singlekey"'"\]/p' | sed 's/^.* = "\(.*\)"/\1/' )
 						if [ -n "$_ul_value" ] && [ "$_ul_value" != "$_ul_singlekey" ]; then
 							# The result is different from the base value so print out the line.
 							echo "${_ul_prefix}${_ul_value}${_ul_line##*)@}"
@@ -2504,7 +2504,7 @@ upload_curseforge() {
 	fi
 
 	local _cf_game_version_id _cf_game_version _cf_versions
-	_cf_versions=$( curl -s -H "x-api-token: $cf_token" "$project_site/api/game/wow/versions" )
+	_cf_versions=$( curl -L -s -H "x-api-token: $cf_token" "$project_site/api/game/wow/versions" )
 	if [[ -n $_cf_versions && $_cf_versions != *"errorMessage"* ]]; then
 		_cf_game_version_id=
 		_cf_game_version=
@@ -2571,7 +2571,7 @@ upload_curseforge() {
 
 	echo "Uploading $archive_name ($_cf_game_version $file_type) to $project_site/projects/$slug"
 	resultfile="$releasedir/cf_result.json"
-	if result=$( echo "$_cf_payload" | curl -sS --retry 3 --retry-delay 10 \
+	if result=$( echo "$_cf_payload" | curl -L -sS --retry 3 --retry-delay 10 \
 			-w "%{http_code}" -o "$resultfile" \
 			-H "x-api-token: $cf_token" \
 			-F "metadata=<-" \
@@ -2614,7 +2614,7 @@ upload_wowinterface() {
 	fi
 
 	local _wowi_versions _wowi_game_version
-	_wowi_versions=$( curl -s https://api.wowinterface.com/addons/compatible.json )
+	_wowi_versions=$( curl -L -s https://api.wowinterface.com/addons/compatible.json )
 	if [ -n "$_wowi_versions" ]; then
 		local version wowi_type
 		for type in "${!game_type_version[@]}"; do
@@ -2665,7 +2665,7 @@ upload_wowinterface() {
 
 	echo "Uploading $archive_name ($_wowi_game_version) to https://www.wowinterface.com/downloads/info$addonid"
 	resultfile="$releasedir/wi_result.json"
-	if result=$( curl -sS --retry 3 --retry-delay 10 \
+	if result=$( curl -L -sS --retry 3 --retry-delay 10 \
 			-w "%{http_code}" -o "$resultfile" \
 			-H "x-api-token: $wowi_token" \
 			-F "id=$addonid" \
@@ -2715,7 +2715,7 @@ upload_wago() {
 	fi
 
 	local _wago_support_property _wago_versions
-	_wago_versions=$( curl -s https://addons.wago.io/api/data/game | jq -c '.patches' 2>/dev/null )
+	_wago_versions=$( curl -L -s https://addons.wago.io/api/data/game | jq -c '.patches' 2>/dev/null )
 	if [ -n "$_wago_versions" ]; then
 		_wago_support_property=
 		local version wago_type
@@ -2768,7 +2768,7 @@ upload_wago() {
 
 	echo "Uploading $archive_name ($game_version $file_type) to Wago"
 	resultfile="$releasedir/wago_result.json"
-	if result=$( echo "$_wago_payload" | curl -sS --retry 3 --retry-delay 10 \
+	if result=$( echo "$_wago_payload" | curl -L -sS --retry 3 --retry-delay 10 \
 			-w "%{http_code}" -o "$resultfile" \
 			-H "authorization: Bearer $wago_token" \
 			-H "accept: application/json" \
@@ -2815,14 +2815,14 @@ upload_github_asset() {
 	local _ghf_content_type="application/${_ghf_file_name##*.}" # zip or json
 
 	# check if an asset exists and delete it (editing a release)
-	asset_id=$( curl -sS \
+	asset_id=$( curl -L -sS \
 			-H "Accept: application/vnd.github.v3+json" \
 			-H "Authorization: token $github_token" \
 			"https://api.github.com/repos/$project_github_slug/releases/$_ghf_release_id/assets" \
 		| jq --arg file "$_ghf_file_name"  '.[] | select(.name? == $file) | .id'
 	)
 	if [ -n "$asset_id" ]; then
-		curl -s \
+		curl -L -s \
 			-X DELETE \
 			-H "Accept: application/vnd.github.v3+json" \
 			-H "Authorization: token $github_token" \
@@ -2830,7 +2830,7 @@ upload_github_asset() {
 	fi
 
 	echo -n "Uploading $_ghf_file_name... "
-	if result=$( curl -sS --retry 3 --retry-delay 10 \
+	if result=$( curl -L -sS --retry 3 --retry-delay 10 \
 			-w "%{http_code}" -o "$_ghf_resultfile" \
 			-H "Accept: application/vnd.github.v3+json" \
 			-H "Authorization: token $github_token" \
@@ -2901,7 +2901,7 @@ upload_github() {
 	)
 	resultfile="$releasedir/gh_result.json"
 
-	release_id=$( curl -sS \
+	release_id=$( curl -L -sS \
 			-H "Accept: application/vnd.github.v3+json" \
 			-H "Authorization: token $github_token" \
 			"https://api.github.com/repos/$project_github_slug/releases/tags/$tag" \
@@ -2913,7 +2913,7 @@ upload_github() {
 		_gh_method="PATCH"
 
 		# combine version info
-		_gh_metadata_url=$( curl -sS \
+		_gh_metadata_url=$( curl -L -sS \
 				-H "Accept: application/vnd.github.v3+json" \
 				-H "Authorization: token $github_token" \
 				"https://api.github.com/repos/$project_github_slug/releases/$release_id/assets" \
@@ -2935,7 +2935,7 @@ upload_github() {
 		_gh_release_url="https://api.github.com/repos/$project_github_slug/releases"
 		_gh_method="POST"
 	fi
-	if result=$( echo "$_gh_payload" | curl -sS --retry 3 --retry-delay 10 \
+	if result=$( echo "$_gh_payload" | curl -L -sS --retry 3 --retry-delay 10 \
 			-w "%{http_code}" -o "$resultfile" \
 			-H "Accept: application/vnd.github.v3+json" \
 			-H "Authorization: token $github_token" \
